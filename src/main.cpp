@@ -36,6 +36,7 @@ constexpr UINT WM_SKIN_DRAGGED = WM_APP + 3;  // wParam = loaded-skin index
 constexpr UINT WM_SKIN_CLICK = WM_APP + 4;    // wParam = index, lParam = MAKELPARAM(xDip, yDip)
 constexpr UINT WM_SKIN_MENU = WM_APP + 5;     // wParam = index
 constexpr UINT WM_SKINS_CHANGED = WM_APP + 6;
+constexpr UINT WM_SHOW_UI = WM_APP + 7;  // posted by a second launch: bring the settings window forward
 
 constexpr UINT_PTR TIMER_TICK = 1;
 constexpr UINT_PTR TIMER_ATTACH = 2;
@@ -47,6 +48,11 @@ constexpr UINT ID_OPEN_FOLDER = 1002;
 constexpr UINT ID_AUTOSTART = 1003;
 constexpr UINT ID_RESET_ALL = 1004;
 constexpr UINT ID_QUIT = 1005;
+constexpr UINT ID_OPEN_UI = 1006;
+
+constexpr wchar_t kManagerClass[] = L"DeskSkin.Manager";
+constexpr UINT IDC_LIST = 3001, IDC_TOGGLE = 3002, IDC_LOCK = 3003, IDC_CLICK = 3004, IDC_EDIT = 3005,
+               IDC_RESET = 3006, IDC_REFRESH = 3007, IDC_AUTOSTART = 3008, IDC_FOLDER = 3009;
 constexpr UINT ID_SKIN_BASE = 2000;  // + availableIndex * 8 + action
 enum SkinAction : UINT { ActEnabled, ActLocked, ActClickThrough, ActEdit, ActResetPos, ActCount = 8 };
 
@@ -108,8 +114,9 @@ struct LoadedSkin {
 
 class App final : public input::IDesktopMouseSink {
  public:
-  bool Init(HINSTANCE hi);
+  bool Init(HINSTANCE hi, bool showUi);
   void Shutdown();
+  bool HandleUiMessage(MSG* msg) { return m_ui && IsDialogMessageW(m_ui, msg); }  // Tab / Enter navigation
   bool OnDesktopMouse(UINT msg, POINT pt) override;  // runs inside the mouse hook: keep it fast
 
  private:
@@ -139,10 +146,19 @@ class App final : public input::IDesktopMouseSink {
   void SaveSkinPosition(std::size_t loadedIndex);
   void Popup(HMENU menu);
 
+  // Settings window
+  static LRESULT CALLBACK ManagerProc(HWND, UINT, WPARAM, LPARAM);
+  void ShowManager();
+  void RefreshManagerList();
+  void OnManagerCommand(UINT id);
+
   HINSTANCE m_hInst = nullptr;
   HWND m_hwnd = nullptr;
   UINT m_taskbarCreated = 0;
   fs::path m_dataDir, m_skinsRoot;
+
+  HWND m_ui = nullptr;
+  HFONT m_uiFont = nullptr;
 
   HANDLE m_watch = INVALID_HANDLE_VALUE;
   HANDLE m_watchWait = nullptr;
@@ -166,7 +182,7 @@ class App final : public input::IDesktopMouseSink {
 // ---------------------------------------------------------------------------------------------
 // Startup / shutdown
 // ---------------------------------------------------------------------------------------------
-bool App::Init(HINSTANCE hi) {
+bool App::Init(HINSTANCE hi, bool showUi) {
   m_hInst = hi;
 
   wchar_t exe[MAX_PATH];
@@ -206,10 +222,12 @@ bool App::Init(HINSTANCE hi) {
   // At logon Explorer may not have created the desktop yet: keep retrying instead of giving up.
   if (!TryAttachAndLoad()) SetTimer(m_hwnd, TIMER_ATTACH, 1000, nullptr);
   StartWatch();
+  if (showUi) ShowManager();
   return true;
 }
 
 void App::Shutdown() {
+  if (m_ui) DestroyWindow(m_ui);
   m_router.Uninstall();
   StopWatch();
   UnloadSkins();
@@ -307,6 +325,7 @@ void App::LoadSkins() {
     m_skins.push_back(std::move(ls));
   }
   UpdateTimer();
+  RefreshManagerList();
   m_gfx.Trim();  // return load-time garbage to the OS: the idle footprint is measured after this
 }
 
@@ -501,6 +520,7 @@ void App::AppendSkinItems(HMENU menu, std::size_t i) {
 
 void App::ShowTrayMenu() {
   HMENU menu = CreatePopupMenu();
+  AppendMenuW(menu, MF_STRING, ID_OPEN_UI, L"Open DeskSkin window...");
   AppendMenuW(menu, MF_STRING, ID_REFRESH, L"Refresh all skins");
 
   HMENU skins = CreatePopupMenu();
@@ -559,6 +579,141 @@ void App::HandleSkinAction(std::size_t i, UINT action) {
       Reload(false);
       return;
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Settings window: a plain Win32 window with a list box and buttons
+// ---------------------------------------------------------------------------------------------
+void App::RefreshManagerList() {
+  if (!m_ui) return;
+  HWND list = GetDlgItem(m_ui, IDC_LIST);
+  const LRESULT sel = SendMessageW(list, LB_GETCURSEL, 0, 0);
+  SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+  SendMessageW(list, LB_RESETCONTENT, 0, 0);
+  for (const auto& a : m_available) {
+    const config::SkinState st = m_settings.Get(a.key);
+    std::wstring line = st.enabled ? L"[On]    " : L"[Off]   ";
+    line += a.display;
+    if (st.locked) line += L"   (locked)";
+    if (st.clickThrough) line += L"   (click-through)";
+    SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
+  }
+  if (sel != LB_ERR && sel < static_cast<LRESULT>(m_available.size())) SendMessageW(list, LB_SETCURSEL, static_cast<WPARAM>(sel), 0);
+  SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+  InvalidateRect(list, nullptr, TRUE);
+  CheckDlgButton(m_ui, IDC_AUTOSTART, platform::autostart::IsEnabled() ? BST_CHECKED : BST_UNCHECKED);
+}
+
+void App::ShowManager() {
+  if (m_ui) {
+    ShowWindow(m_ui, SW_SHOWNORMAL);
+    SetForegroundWindow(m_ui);
+    return;
+  }
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &App::ManagerProc;
+    wc.hInstance = m_hInst;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(static_cast<UINT_PTR>(COLOR_BTNFACE + 1));
+    wc.hIcon = LoadIconW(m_hInst, MAKEINTRESOURCEW(1));
+    wc.hIconSm = wc.hIcon;
+    wc.lpszClassName = kManagerClass;
+    if (!RegisterClassExW(&wc)) return;
+    registered = true;
+  }
+
+  const UINT dpi = GetDpiForSystem();
+  auto S = [dpi](int v) { return MulDiv(v, static_cast<int>(dpi), 96); };
+  const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+  RECT rc{0, 0, S(440), S(310)};
+  AdjustWindowRectExForDpi(&rc, style, FALSE, 0, dpi);
+  m_ui = CreateWindowExW(0, kManagerClass, L"DeskSkin - Widgets", style, CW_USEDEFAULT, CW_USEDEFAULT,
+                         rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, m_hInst, this);
+  if (!m_ui) return;
+
+  NONCLIENTMETRICSW ncm{sizeof(ncm)};
+  SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi);
+  m_uiFont = CreateFontIndirectW(&ncm.lfMessageFont);
+
+  auto add = [&](DWORD ex, const wchar_t* cls, const wchar_t* text, DWORD st, int x, int y, int w, int h, UINT id) {
+    HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | st, S(x), S(y), S(w), S(h), m_ui,
+                             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), m_hInst, nullptr);
+    SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(m_uiFont), TRUE);
+    return c;
+  };
+  const DWORD btn = WS_TABSTOP | BS_PUSHBUTTON;
+  add(0, L"STATIC", L"Select a widget, then choose what to do with it:", 0, 12, 10, 416, 20, 0);
+  add(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 12, 34, 262, 204, IDC_LIST);
+  add(0, L"BUTTON", L"Show / Hide", btn, 286, 34, 142, 28, IDC_TOGGLE);
+  add(0, L"BUTTON", L"Lock position", btn, 286, 68, 142, 28, IDC_LOCK);
+  add(0, L"BUTTON", L"Click-through", btn, 286, 102, 142, 28, IDC_CLICK);
+  add(0, L"BUTTON", L"Edit skin file...", btn, 286, 136, 142, 28, IDC_EDIT);
+  add(0, L"BUTTON", L"Reset position", btn, 286, 170, 142, 28, IDC_RESET);
+  add(0, L"BUTTON", L"Refresh all", btn, 286, 210, 142, 28, IDC_REFRESH);
+  add(0, L"BUTTON", L"Start with Windows", WS_TABSTOP | BS_AUTOCHECKBOX, 12, 250, 200, 22, IDC_AUTOSTART);
+  add(0, L"BUTTON", L"Open skins folder", btn, 286, 246, 142, 28, IDC_FOLDER);
+  add(0, L"STATIC", L"Tip: drag a widget on the desktop to move it; right-click it for options.", 0, 12, 284, 416, 20, 0);
+
+  RefreshManagerList();
+  ShowWindow(m_ui, SW_SHOWNORMAL);
+  SetForegroundWindow(m_ui);
+}
+
+void App::OnManagerCommand(UINT id) {
+  UINT action = ActCount;
+  switch (id) {
+    case IDC_AUTOSTART:
+      platform::autostart::SetEnabled(IsDlgButtonChecked(m_ui, IDC_AUTOSTART) == BST_CHECKED);
+      RefreshManagerList();
+      return;
+    case IDC_REFRESH:
+      Reload(false);
+      return;
+    case IDC_FOLDER:
+      ShellExecuteW(nullptr, L"open", m_skinsRoot.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      return;
+    case IDC_TOGGLE: action = ActEnabled; break;
+    case IDC_LOCK: action = ActLocked; break;
+    case IDC_CLICK: action = ActClickThrough; break;
+    case IDC_EDIT: action = ActEdit; break;
+    case IDC_RESET: action = ActResetPos; break;
+    default: return;  // list notifications etc.
+  }
+  const LRESULT sel = SendMessageW(GetDlgItem(m_ui, IDC_LIST), LB_GETCURSEL, 0, 0);
+  if (sel == LB_ERR || sel >= static_cast<LRESULT>(m_available.size())) {
+    MessageBoxW(m_ui, L"Select a widget in the list first.", L"DeskSkin", MB_ICONINFORMATION);
+    return;
+  }
+  HandleSkinAction(static_cast<std::size_t>(sel), action);
+  RefreshManagerList();
+}
+
+LRESULT CALLBACK App::ManagerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  App* self = nullptr;
+  if (m == WM_NCCREATE) {
+    self = static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);
+    SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+  } else {
+    self = reinterpret_cast<App*>(GetWindowLongPtrW(h, GWLP_USERDATA));
+  }
+  if (!self) return DefWindowProcW(h, m, w, l);
+  switch (m) {
+    case WM_COMMAND:
+      self->OnManagerCommand(LOWORD(w));
+      return 0;
+    case WM_CLOSE:
+      DestroyWindow(h);  // closing the window does NOT quit DeskSkin; it keeps running in the tray
+      return 0;
+    case WM_DESTROY:
+      if (self->m_uiFont) DeleteObject(self->m_uiFont);
+      self->m_uiFont = nullptr;
+      self->m_ui = nullptr;
+      return 0;
+  }
+  return DefWindowProcW(h, m, w, l);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -622,7 +777,11 @@ LRESULT App::OnMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
       ShowSkinMenu(w);
       return 0;
     case WM_TRAY:
-      if (LOWORD(l) == WM_RBUTTONUP || LOWORD(l) == WM_LBUTTONUP || LOWORD(l) == WM_CONTEXTMENU) ShowTrayMenu();
+      if (LOWORD(l) == WM_LBUTTONUP) ShowManager();
+      else if (LOWORD(l) == WM_RBUTTONUP || LOWORD(l) == WM_CONTEXTMENU) ShowTrayMenu();
+      return 0;
+    case WM_SHOW_UI:
+      ShowManager();
       return 0;
     case WM_COMMAND: {
       const UINT id = LOWORD(w);
@@ -631,6 +790,9 @@ LRESULT App::OnMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
       }
       switch (id) {
+        case ID_OPEN_UI:
+          ShowManager();
+          break;
         case ID_REFRESH:
           Reload(false);
           break;
@@ -667,10 +829,11 @@ LRESULT App::OnMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR cmdLine, int) {
   // One instance only: a second double-click must not stack a second set of widgets.
   HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
   if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    if (HWND other = FindWindowW(kControlClass, nullptr)) PostMessageW(other, WM_SHOW_UI, 0, 0);  // show the existing instance
     CloseHandle(mutex);
     return 0;
   }
@@ -681,9 +844,12 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
   int exitCode = 0;
   {
     App app;
-    if (app.Init(hi)) {
+    // Started by the Windows Run entry => stay in the tray; started by a double-click => show the window.
+    const bool background = cmdLine && wcsstr(cmdLine, L"--background") != nullptr;
+    if (app.Init(hi, !background)) {
       MSG msg;
       while (GetMessageW(&msg, nullptr, 0, 0) > 0) {  // blocks: 0% CPU while nothing happens
+        if (app.HandleUiMessage(&msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
       }
