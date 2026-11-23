@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 
 #include "config/IniParser.h"
@@ -66,12 +67,15 @@ int main() {
 
   // UTF-16LE through the file loader.
   const std::string u16 = std::string("\xFF\xFE", 2) + std::string("[\0s\0]\0\n\0k\0=\0\xE9\0", 14);
+  const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "deskskin_u16_test.ini";
   {
-    FILE* f = std::fopen("/tmp/u16.ini", "wb");
+    FILE* f = tmp.empty() ? nullptr : std::fopen(tmp.string().c_str(), "wb");
+    CHECK(f != nullptr);  // fail with a clear message instead of crashing
     std::fwrite(u16.data(), 1, u16.size(), f);
     std::fclose(f);
   }
-  auto fd = Document::ParseFile("/tmp/u16.ini");
+  auto fd = Document::ParseFile(tmp);
+  std::filesystem::remove(tmp);
   CHECK(fd && fd->GetString("s", "k") == "\xC3\xA9");
 
   // Self-referencing variables must terminate and stay bounded.
