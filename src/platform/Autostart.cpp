@@ -13,7 +13,7 @@ constexpr wchar_t kValueName[] = L"DeskSkin";
 std::wstring Command() {
   wchar_t buf[1024];
   const DWORD n = GetModuleFileNameW(nullptr, buf, ARRAYSIZE(buf));
-  return L"\"" + std::wstring(buf, n) + L"\"";
+  return L"\"" + std::wstring(buf, n) + L"\" --background";
 }
 
 }  // namespace
