@@ -4,6 +4,8 @@ project(DeskSkin VERSION 0.2.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Static CRT for every target (exe, library, tests) so they all agree.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # --- Portable core: INI parser + its tests (builds and runs on any OS) -------------------------
 add_library(deskskin_ini STATIC src/config/IniParser.cpp src/config/Settings.cpp)
@@ -30,15 +32,13 @@ if(WIN32)
     src/render/SkinWindow.cpp
     src/skin/BasicSkin.cpp)
   target_include_directories(deskskin PRIVATE src)
-  target_compile_definitions(deskskin PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+  target_compile_definitions(deskskin PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN WINVER=0x0A00 _WIN32_WINNT=0x0A00)
   target_link_libraries(deskskin PRIVATE deskskin_ini
     d3d11 dxgi d2d1 dwrite dcomp user32 gdi32 shell32 shcore ole32 advapi32)
   set_target_properties(deskskin PROPERTIES OUTPUT_NAME "DeskSkin")
 
   if(MSVC)
     # Static CRT: no vcruntime DLLs to load or page in. Size-optimised, dead-code-stripped.
-    set_property(TARGET deskskin deskskin_ini PROPERTY
-      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_compile_options(deskskin PRIVATE /W4 /utf-8 /permissive- /Zc:__cplusplus /Gy /Gw
       $<$<CONFIG:Release>:/O1 /GL>)
     # The manifest (DPI awareness, Win10/11 compatibility) is embedded by DeskSkin.rc.
