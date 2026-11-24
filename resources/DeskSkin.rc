@@ -1,0 +1,26 @@
+#include <windows.h>
+
+1 ICON "DeskSkin.ico"
+1 RT_MANIFEST "DeskSkin.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,2,0,0
+ PRODUCTVERSION 0,2,0,0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "DeskSkin desktop widget engine"
+      VALUE "ProductName", "DeskSkin"
+      VALUE "FileVersion", "0.2.0.0"
+      VALUE "OriginalFilename", "DeskSkin.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

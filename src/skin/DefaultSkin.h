@@ -1,0 +1,57 @@
+// Written to Skins\Demo\Demo.ini on first run when no skins exist, so a bare DeskSkin.exe shows
+// something immediately. Keep in sync with skins/Demo/Demo.ini.
+#pragma once
+
+namespace deskskin::skin {
+inline constexpr char kDefaultSkinIni[] = R"INI(; Demo skin. Skins\<Name>\<anything>.ini - every .ini is one skin.
+; Drag it with the left mouse button; right-click it for options. Saving this file reloads it.
+
+[Variables]
+Accent=80,170,255,255
+Muted=170,180,195,255
+Pad=18
+
+[Skin]
+X=120
+Y=120
+Width=300
+Height=130
+Update=1000
+BackgroundColor=18,22,30,205
+CornerRadius=14
+
+[MeterClock]
+Meter=String
+X=#Pad#
+Y=10
+W=264
+H=60
+FontFace=Segoe UI Light
+FontSize=44
+FontColor=255,255,255,255
+Text=%TIME%
+; Click the clock to open Windows date & time settings.
+LeftMouseUpAction=Open:ms-settings:dateandtime
+
+[MeterDate]
+Meter=String
+X=#Pad#
+Y=72
+W=264
+H=22
+FontFace=Segoe UI
+FontSize=14
+FontColor=#Muted#
+Text=%DATE%
+
+[MeterBar]
+Meter=Bar
+X=#Pad#
+Y=106
+W=264
+H=8
+Value=0.42
+BarColor=#Accent#
+SolidColor=255,255,255,40
+)INI";
+}  // namespace deskskin::skin
