@@ -1,5 +1,7 @@
 // DeskSkin v0.2 - application shell: tray, skin discovery, dragging, persistence, autostart,
 // live skin reload, Explorer/GPU recovery.
+#include <windows.h>  // must come before commdlg.h and the other Windows headers
+
 #include <commdlg.h>
 #include <objbase.h>
 #include <shellapi.h>
